@@ -119,7 +119,134 @@ else:
 # ------------------------------------------------------------------
 # Tabs for selected app
 # ------------------------------------------------------------------
-t_actions, t_snapshots, t_insights = st.tabs(["📋 Action items", "📸 Snapshots", "💡 Insights"])
+t_kpis, t_actions, t_snapshots, t_insights = st.tabs(
+    ["📈 KPIs", "📋 Action items", "📸 Snapshots", "💡 Insights"]
+)
+
+
+# --- KPIs --------------------------------------------------------
+with t_kpis:
+    kpis = q(
+        """
+        SELECT id, measurement_date, kpi_name, value, unit, window_days,
+               source, notes
+        FROM kpi_measurements
+        WHERE app_id = %s
+        ORDER BY measurement_date DESC, kpi_name
+        """,
+        (int(app_choice),),
+    )
+
+    if kpis.empty:
+        st.info("No KPI measurements yet for this app.")
+    else:
+        # ----- LATEST values per KPI ----------------------------
+        st.markdown("### Latest values")
+        latest = (
+            kpis.sort_values("measurement_date", ascending=False)
+                .drop_duplicates("kpi_name")
+                .sort_values("kpi_name")
+        )
+
+        # 4-column grid of metrics
+        rows = [latest.iloc[i:i+4] for i in range(0, len(latest), 4)]
+        for chunk in rows:
+            cols = st.columns(4)
+            for col, (_, r) in zip(cols, chunk.iterrows()):
+                unit = r["unit"] or ""
+                if unit == "USD":
+                    val = f"${float(r['value']):,.0f}"
+                elif unit == "pct":
+                    val = f"{float(r['value']):.1f}%"
+                elif unit == "count":
+                    val = f"{float(r['value']):,.0f}"
+                else:
+                    val = f"{r['value']}"
+                col.metric(r["kpi_name"], val, help=r["notes"])
+
+        # ----- BEFORE / AFTER comparison ------------------------
+        st.markdown("### Before / After (per shipped action item)")
+        shipped = q(
+            """
+            SELECT id, title, completed_at::date AS shipped_on,
+                   recheck_date
+            FROM action_items
+            WHERE app_id = %s AND status = 'done' AND completed_at IS NOT NULL
+            ORDER BY completed_at DESC
+            """,
+            (int(app_choice),),
+        )
+        if shipped.empty:
+            st.caption("No shipped action items yet.")
+        else:
+            for _, item in shipped.iterrows():
+                ship_date = item["shipped_on"]
+                with st.expander(
+                    f"#{item['id']} — {item['title']}  "
+                    f"(shipped {ship_date} · recheck {item['recheck_date'] or '—'})"
+                ):
+                    # Baseline = latest measurement on or BEFORE ship_date
+                    baseline = (
+                        kpis[kpis["measurement_date"] <= ship_date]
+                        .sort_values("measurement_date", ascending=False)
+                        .drop_duplicates("kpi_name")
+                        [["kpi_name", "measurement_date", "value", "unit"]]
+                        .rename(columns={"measurement_date": "baseline_date",
+                                         "value": "baseline_value"})
+                    )
+                    # Current = latest measurement AFTER ship_date
+                    after = (
+                        kpis[kpis["measurement_date"] > ship_date]
+                        .sort_values("measurement_date", ascending=False)
+                        .drop_duplicates("kpi_name")
+                        [["kpi_name", "measurement_date", "value"]]
+                        .rename(columns={"measurement_date": "current_date",
+                                         "value": "current_value"})
+                    )
+                    cmp = baseline.merge(after, on="kpi_name", how="left")
+                    if cmp.empty:
+                        st.caption("No baseline KPIs locked in before this ship date.")
+                        continue
+                    cmp["delta"] = cmp["current_value"] - cmp["baseline_value"]
+                    cmp["pct_change"] = (cmp["delta"] / cmp["baseline_value"] * 100).round(1)
+                    if cmp["current_value"].isna().all():
+                        st.caption(
+                            f"⏳ No post-ship measurements yet. Recheck on "
+                            f"**{item['recheck_date']}** — pull fresh KPIs and INSERT into "
+                            f"`kpi_measurements` to populate this comparison."
+                        )
+                    st.dataframe(
+                        cmp[["kpi_name", "unit", "baseline_value", "baseline_date",
+                             "current_value", "current_date", "delta", "pct_change"]],
+                        use_container_width=True, hide_index=True,
+                    )
+
+        # ----- Per-KPI history (line chart) ---------------------
+        st.markdown("### KPI history")
+        kpi_pick = st.selectbox(
+            "Pick a KPI",
+            sorted(kpis["kpi_name"].unique()),
+        )
+        if kpi_pick:
+            series = (
+                kpis[kpis["kpi_name"] == kpi_pick]
+                .sort_values("measurement_date")
+                [["measurement_date", "value"]]
+                .set_index("measurement_date")
+            )
+            if len(series) >= 2:
+                st.line_chart(series, height=240)
+            else:
+                st.info(
+                    f"Only 1 measurement for `{kpi_pick}` so far. "
+                    f"Chart appears once you have ≥2 measurements."
+                )
+            st.caption("Raw measurements:")
+            st.dataframe(
+                kpis[kpis["kpi_name"] == kpi_pick]
+                    [["measurement_date", "value", "unit", "window_days", "source", "notes"]],
+                use_container_width=True, hide_index=True,
+            )
 
 # --- Action items --------------------------------------------------
 with t_actions:
