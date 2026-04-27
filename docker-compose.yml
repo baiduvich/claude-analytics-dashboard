@@ -1,0 +1,20 @@
+services:
+  dashboard:
+    build: .
+    container_name: claude-analytics-dashboard
+    restart: unless-stopped
+    networks:
+      - coolify
+    environment:
+      DB_HOST: jo0c0k0kg4g8okko4ks48g8g
+      DB_PORT: "5432"
+      DB_NAME: claude_analytics
+      DB_USER: postgres
+      DB_PASS: postgres
+      DASH_PASSWORD: ${DASH_PASSWORD}
+    ports:
+      - "8501:8501"
+
+networks:
+  coolify:
+    external: true
